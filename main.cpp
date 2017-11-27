@@ -1,203 +1,309 @@
-#include <cstdlib>
 #include <iostream>
 #include <string>
-#include <string.h>
 #include <vector>
-#include <algorithm>
 #include <map>
+#include <cassert>
+#include <unordered_map>
+#include <set>
+#include <algorithm>
 
-using namespace std;
+using AugmentedGrammar = std::map<char,std::vector<std::string>>;
+using GotoMap = std::map<std::string,int>;
 
-typedef map<char, vector<string> > AugmentedGrammar;
-typedef map<string, int> GotoMap; // <aps productions to LR(0) item ids
-
-// structy for representing an augmented grammar production
-struct AugmentedProduction
+struct Operation
 {
-    char lhs;   // left hand side of production
-    string rhs; // right hand side of production
-
-    AugmentedProduction() {}
-    AugmentedProduction(char _lhs, string _rhs) : lhs(_lhs), rhs(_rhs) {}
+    enum OperatorType
+    {
+        SHIFT,REDUCE
+    } operatorType;
+    int itemId;
 };
 
-// Class for representing LR(0) items.
-class LR0Item
+using ActionMap  = std::map<char,Operation>;
+using FirstSetMap = std::unordered_map<char,std::set<char>>;
+using FollowSetMap = std::unordered_map<char,std::set<char>>;
+
+
+struct AugmentedProduction
+{
+    char lhs;
+    std::string rhs;
+    AugmentedProduction(char _lhs,std::string _rhs)
+            :lhs(_lhs),rhs(std::move(_rhs))
+    {
+
+    }
+};
+
+class SLRItem
 {
 private:
-    // list of productions
-    vector<AugmentedProduction*> productions;
+    std::vector<AugmentedProduction*> productions;
 
 public:
-    // list of out-edges
-    map<char, int> gotos;
 
-    // constructor
-    LR0Item() {}
-    // destructor
-    ~LR0Item() {}
+    std::map<char,int> gotos;
+    SLRItem() = default;
+    ~SLRItem() = default;
 
-    // add production
-    void Push(AugmentedProduction *p) { productions.push_back(p); }
-    // return the number of productions
-    int Size() { return int(productions.size()); }
+    void Push(AugmentedProduction* p)
+    {
+        productions.push_back(p);
+    }
 
-    // return whether or not this item contains the production prodStr
-    bool Contains (string production) {
-        for (auto it = productions.begin(); it != productions.end(); it++) {
-            string existing = string(&(*it)->lhs, 1) + "->" + (*it)->rhs;
-            //cout << " Comparing: " << thisStr << " , " << prodStr << endl;
-            if (strcmp(production.c_str(), existing.c_str()) == 0) {
+    int Size()
+    {
+        return static_cast<int>(productions.size());
+    }
+
+    bool Contains(const std::string& production)
+    {
+        for (auto &it : productions) {
+            std::string existing = std::string(1, it->lhs) + "->" + it->rhs;
+            if(existing==production)
                 return true;
-            }
         }
         return false;
     }
 
-    // overloaded index operator; access pointer to production.
-    AugmentedProduction* operator[](const int index) {
+    AugmentedProduction* operator[](const int index)
+    {
         return productions[index];
     }
 };
 
-/* void add_closure
- * If 'next' is the current input symbol and next is nonterminal, then the set
- * of LR(0) items reachable from here on next includes all LR(0) items reachable
- * from here on FIRST(next). Add all grammar productions with a lhs of next */
-void
-add_closure(char lookahead, LR0Item& item, AugmentedGrammar& grammar)
+void load_grammar(AugmentedGrammar& augmentedGrammar,std::vector<SLRItem>& slritems)
 {
-    // only continue if lookahead is a non-terminal
-    if (!isupper(lookahead)) return;
+    std::string production;
+    std::string lhs,rhs;
+    std::string delim = "->";
+    getline(std::cin,lhs);
+    augmentedGrammar['\''].push_back(lhs);
+    slritems[0].Push(new AugmentedProduction('\'',"@"+lhs));
 
-    string lhs = string(&lookahead, 1);
-    // iterate over each grammar production beginning with p->rhs[next]
-    // to see if that production has already been included in this item.
-    for (int i = 0; i<grammar[lookahead].size(); i++) {
-        string rhs = "@" + grammar[lookahead][i];
-        // if the grammar production for the next input symbol does not yet
-        // exist for this item, add it to the item's set of productions
-        if (!item.Contains( lhs + "->" + rhs )) {
-            item.Push(new AugmentedProduction(lookahead, rhs));
+    while(true)
+    {
+        getline(std::cin,production);
+        if(production.length()<1)
+            return;
+        auto pos = production.find(delim);
+        assert(pos>=0&&pos<production.length());
+
+        lhs = production.substr(0,pos);
+        rhs = production.substr(pos+delim.length(),std::string::npos);
+        augmentedGrammar[lhs[0]].push_back(rhs);
+        slritems[0].Push(new AugmentedProduction(lhs[0],"@"+rhs));
+    }
+
+}
+
+void add_closure(char lookahead,SLRItem& item,AugmentedGrammar& augmentedGrammar)
+{
+    // only deal with non-Terminal
+    if(!isupper(lookahead))
+        return;
+
+    std::string lhs = std::string(1,lookahead);
+
+    for(int i = 0;i<augmentedGrammar[lookahead].size();i++)
+    {
+        std::string rhs = "@" + augmentedGrammar[lookahead][i];
+        if(!item.Contains(lhs+"->"+rhs))
+        {
+            item.Push(new AugmentedProduction(lookahead,rhs));
         }
     }
 }
 
-// produce the graph of LR(0) items from the given augmented grammar
-void
-get_LR0_items(vector<LR0Item>& lr0items, AugmentedGrammar& grammar, int& itemid, GotoMap& globalGoto)
+void get_SLR_items(std::vector<SLRItem>& slritems,AugmentedGrammar& grammar,int& itemid,GotoMap& GOTO)
 {
+
     printf("I%d:\n", itemid);
 
-    // ensure that the current item contains te full closure of it's productions
-    for (int i = 0; i<lr0items[itemid].Size(); i++) {
-        string rhs = lr0items[itemid][i]->rhs;
-        char lookahead = rhs[rhs.find('@')+1];
-        add_closure(lookahead, lr0items[itemid], grammar);
+
+    //calculate the closure of the current item
+    for(int i = 0;i<slritems[itemid].Size();i++)
+    {
+        std::string rhs = slritems[itemid][i] -> rhs;
+        char lookahead = rhs[rhs.rfind('@')+1];
+        add_closure(lookahead,slritems[itemid],grammar);
     }
 
-    int nextpos;
-    char lookahead, lhs;
-    string rhs;
-    AugmentedProduction *prod;
+    char lookahead,lhs;
+    std::string rhs;
 
-    // iterate over each production in this LR(0) item
-    for (int i = 0; i<lr0items[itemid].Size(); i++) {
-        // get the current production
-        lhs = lr0items[itemid][i]->lhs;
-        rhs = lr0items[itemid][i]->rhs;
-        string production = string(&lhs,1) + "->" + rhs;
+    for(int i = 0;i<slritems[itemid].Size();i++)
+    {
 
-        // get lookahead if one exists
+
+        lhs = slritems[itemid][i]->lhs;
+        rhs = slritems[itemid][i]->rhs;
+
+
+        std::string production = std::string(1,lhs) + "->" + rhs;
+
         lookahead = rhs[rhs.find('@')+1];
-        if (lookahead == '\0') {
-            printf("\t%-20s\n", &production[0]);
+
+        if(lookahead=='\0'){
+            printf("\t%-20s\n",&production[0]);
             continue;
         }
 
-        // if there is no goto defined for the current input symbol from this
-        // item, assign one.
-        if (lr0items[itemid].gotos.find(lookahead) == lr0items[itemid].gotos.end()) {
-            // that one instead of creating a new one
-            // if there is a global goto defined for the entire production, use
-            if (globalGoto.find(production) == globalGoto.end()) {
-                lr0items.push_back(LR0Item()); // create new state (item)
-                // new right-hand-side is identical with '@' moved one space to the right
-                string newRhs = rhs;
-                int atpos = newRhs.find('@');
-                swap(newRhs[atpos], newRhs[atpos+1]);
-                // add item and update gotos
-                lr0items.back().Push(new AugmentedProduction(lhs, newRhs));
-                lr0items[itemid].gotos[lookahead] = lr0items.size()-1;
-                globalGoto[production] = lr0items.size()-1;
-            } else {
-                // use existing global item
-                lr0items[itemid].gotos[lookahead] = globalGoto[production];
+        if(slritems[itemid].gotos.find(lookahead)==slritems[itemid].gotos.end())
+        {
+            if(GOTO.find(production)==GOTO.end())
+            {
+                slritems.emplace_back(); // create new state (item)
+
+                std::string newRhs = rhs;
+                auto at = static_cast<int>(newRhs.find('@'));
+                std::swap(newRhs[at],newRhs[at+1]);
+
+                slritems.back().Push(new AugmentedProduction(lhs,newRhs));
+                slritems[itemid].gotos[lookahead] = static_cast<int>(slritems.size() - 1);
+                GOTO[production] = static_cast<int>(slritems.size() - 1);
+            }else
+                slritems[itemid].gotos[lookahead] = GOTO[production];
+            printf("\t%-20s goto(%c)=I%d\n", &production[0], lookahead, GOTO[production]);
+
+        }else
+        {
+            //move forward @
+            auto at = static_cast<int>(rhs.find('@'));
+            std::swap(rhs[at],rhs[at+1]);
+
+            int nextItem = slritems[itemid].gotos[lookahead];
+            if (!slritems[nextItem].Contains(std::string(&lhs, 1) + "->" + rhs)) {
+                slritems[nextItem].Push(new AugmentedProduction(lhs, rhs));
             }
-            printf("\t%-20s goto(%c)=I%d\n", &production[0], lookahead, globalGoto[production]);
-        } else {
-            // there is a goto defined, add the current production to it
-            // move @ one space to right for new rhs
-            int at = rhs.find('@');
-            swap(rhs[at], rhs[at+1]);
-            // add production to next item if it doesn't already contain it
-            int nextItem = lr0items[itemid].gotos[lookahead];
-            if (!lr0items[nextItem].Contains(string(&lhs, 1) + "->" + rhs)) {
-                lr0items[nextItem].Push(new AugmentedProduction(lhs, rhs));
-            }
-            swap(rhs[at], rhs[at+1]);
-            printf("\t%-20s\n", &production[0]);
+            std::swap(rhs[at],rhs[at+1]);
+            printf("\t%-20s\n",&production[0]);
         }
     }
 }
 
-/**
- * void load_grammar
- * scan and load the grammar from stdin while setting first LR(0) item */
-void load_grammar(AugmentedGrammar& grammar, vector<LR0Item>& lr0items)
+
+
+
+void calculateFistSet(AugmentedGrammar& augmentedGrammar,FirstSetMap& firstSetMap)
 {
-    string production;
-    string lhs, rhs;
-    string delim = "->";
-    
-    getline(cin, lhs); // scan start production
-    grammar['\''].push_back(lhs);
-    lr0items[0].Push(new AugmentedProduction('\'', "@" + lhs));
-    printf("'->%s\n", lhs.c_str());
-
-    while(1) {
-        getline(cin, production);
-        if (production.length() < 1) return;
-
-        auto pos = production.find(delim);
-        if(pos!=string::npos){
-            lhs = production.substr(0,pos);
-            rhs = production.substr(pos+delim.length(),std::string::npos);
+    bool hasChange = true;
+    while(hasChange) {
+        hasChange = false;
+        for (auto it = augmentedGrammar.rbegin(); it != augmentedGrammar.rend(); it++) {
+            char lhs = (*it).first;
+            auto firstSize = firstSetMap[lhs].size();
+            for (const auto &rightProduction:(*it).second) {
+                char firstChOfRightProduct = rightProduction.front();
+                if (firstChOfRightProduct != lhs) {
+                    if (isupper(firstChOfRightProduct))
+                        std::set_union(firstSetMap[lhs].begin(), firstSetMap[lhs].end(),
+                                       firstSetMap[firstChOfRightProduct].begin(),
+                                       firstSetMap[firstChOfRightProduct].end(),
+                                       std::inserter(firstSetMap[lhs], firstSetMap[lhs].end()));
+                    else
+                        firstSetMap[lhs].emplace(firstChOfRightProduct);
+                }
+            }
+            auto secondSize = firstSetMap[lhs].size();
+            if (secondSize > firstSize)
+                hasChange = true;
         }
-        
-        grammar[lhs[0]].push_back(rhs);
-        printf("%s->%s\n", lhs.c_str(), rhs.c_str());
-        lr0items[0].Push(new AugmentedProduction(lhs[0], "@" + rhs));
     }
 }
 
-// main
-int main() {
-    int itemid = -1; // counter for the number of LR(0) items
-    AugmentedGrammar grammar;
-    vector<LR0Item> lr0items = { LR0Item() }; // push start state
-    GotoMap globalGoto;
+void calculateFollowSet(AugmentedGrammar& augmentedGrammar,FirstSetMap& firstSetMap,FollowSetMap& followSetMap)
+{
+    bool hasChange = true;
+    while(hasChange)
+    {
+        hasChange = false;
+        for(const auto& leftOfProduction:augmentedGrammar)
+        {
+            for(const auto& rightOfProduction:leftOfProduction.second)
+            {
+                for(int i = 0;i<rightOfProduction.length();i++)
+                {
+                    char rightCh = rightOfProduction[i];
+                    if(isupper(rightCh))
+                    {
+                        auto firstSize = followSetMap[rightCh].size();
+                        if(i+1==rightOfProduction.length())
+                            followSetMap[rightCh].emplace('$');
+                        else
+                        {
+                            char nextCh = rightOfProduction[i+1];
+                            if(isupper(nextCh))
+                            {
+                                std::set_union(followSetMap[rightCh].begin(),followSetMap[rightCh].end(),
+                                               firstSetMap[nextCh].begin(),firstSetMap[nextCh].end(),
+                                               std::inserter(followSetMap[rightCh],followSetMap[rightCh].end()));
+                            }else
+                            {
+                                followSetMap[rightCh].emplace(nextCh);
+                            }
+                        }
+                        auto afterInsert = followSetMap[rightCh].size();
+                        if(afterInsert>firstSize)
+                            hasChange = true;
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+int main()
+{
+    int itemid = -1;
+    AugmentedGrammar augmentedGrammar;
+    std::vector<SLRItem> slritems = {SLRItem()};
+    GotoMap GOTO;
+    ActionMap ACTION;
+    FirstSetMap firstSetMap;
+    FollowSetMap followSetMap;
 
     printf("Augmented Grammar\n");
     printf("-----------------\n");
-    load_grammar(grammar, lr0items);
+    load_grammar(augmentedGrammar,slritems);
     printf("\n");
+
+
+    printf("First Set\n");
+    printf("-----------------\n");
+    calculateFistSet(augmentedGrammar,firstSetMap);
+    for(const auto& temp1:firstSetMap)
+    {
+        std::cout<<temp1.first<<":{ ";
+        for(const auto& temp2:temp1.second)
+        {
+            std::cout<<temp2<<", ";
+        }
+        std::cout<<" }"<<std::endl;
+    }
+
+    printf("Follow Set\n");
+    printf("-----------------\n");
+    calculateFollowSet(augmentedGrammar,firstSetMap,followSetMap);
+    for(const auto& temp1:followSetMap)
+    {
+        std::cout<<temp1.first<<":{ ";
+        for(const auto& temp2:temp1.second)
+        {
+            std::cout<<temp2<<", ";
+        }
+        std::cout<<" }"<<std::endl;
+    }
 
     printf("Sets of LR(0) Items\n");
     printf("-------------------\n");
-    while (++itemid < int(lr0items.size())) {
-        get_LR0_items(lr0items, grammar, itemid, globalGoto);
+    while(++itemid<slritems.size())
+    {
+        get_SLR_items(slritems,augmentedGrammar,itemid,GOTO);
     }
     printf("\n");
+
+
     return 0;
 }
