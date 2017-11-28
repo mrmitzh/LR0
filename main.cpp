@@ -6,22 +6,32 @@
 #include <unordered_map>
 #include <set>
 #include <algorithm>
+#include <stack>
+
+using GlobalGoto = std::map<std::string, int>;
 
 using AugmentedGrammar = std::map<char,std::vector<std::string>>;
-using GotoMap = std::map<std::string,int>;
+enum OperatorType
+{
+    SHIFT,REDUCE,ACC
+};
 
 struct Operation
 {
-    enum OperatorType
-    {
-        SHIFT,REDUCE
-    } operatorType;
+    OperatorType operatorType;
     int itemId;
-};
 
-using ActionMap  = std::map<char,Operation>;
-using FirstSetMap = std::unordered_map<char,std::set<char>>;
-using FollowSetMap = std::unordered_map<char,std::set<char>>;
+    //Operation() = default;
+    Operation(OperatorType operatorType,int itemId = -1)
+            :operatorType(operatorType),itemId(itemId)
+    {}
+};
+using GotoMap = std::map<int,std::map<char,int>>;
+using ActionMap = std::map<int,std::map<char,Operation>>;
+using FirstSetMap = std::map<char,std::set<char>>;
+using FollowSetMap = std::map<char,std::set<char>>;
+using ProductionMap = std::map<std::string,int>;
+using ProductionVector = std::vector<std::string>;
 
 
 struct AugmentedProduction
@@ -72,14 +82,19 @@ public:
     }
 };
 
-void load_grammar(AugmentedGrammar& augmentedGrammar,std::vector<SLRItem>& slritems)
+void load_grammar(AugmentedGrammar& augmentedGrammar,std::vector<SLRItem>& slritems,ProductionMap& productionMap,ProductionVector& productionVector)
 {
     std::string production;
     std::string lhs,rhs;
     std::string delim = "->";
     getline(std::cin,lhs);
+    lhs += "$";
     augmentedGrammar['\''].push_back(lhs);
     slritems[0].Push(new AugmentedProduction('\'',"@"+lhs));
+    std::string str = "\'->" + lhs;
+    int productionId = 0;
+    productionVector.push_back(str);
+    productionMap[str] = productionId++;
 
     while(true)
     {
@@ -88,6 +103,9 @@ void load_grammar(AugmentedGrammar& augmentedGrammar,std::vector<SLRItem>& slrit
             return;
         auto pos = production.find(delim);
         assert(pos>=0&&pos<production.length());
+
+        productionVector.push_back(production);
+        productionMap[production] = productionId++;
 
         lhs = production.substr(0,pos);
         rhs = production.substr(pos+delim.length(),std::string::npos);
@@ -115,7 +133,14 @@ void add_closure(char lookahead,SLRItem& item,AugmentedGrammar& augmentedGrammar
     }
 }
 
-void get_SLR_items(std::vector<SLRItem>& slritems,AugmentedGrammar& grammar,int& itemid,GotoMap& GOTO)
+void error()
+{
+    std::cout<<"ERROR"<<std::endl;
+}
+
+
+void get_SLR_items(std::vector<SLRItem>& slritems,AugmentedGrammar& grammar,int& itemid,GlobalGoto& globalGoto,GotoMap& GOTO,ActionMap& ACTION,
+                    FollowSetMap& followSetMap,ProductionMap& productionMap)
 {
 
     printf("I%d:\n", itemid);
@@ -142,42 +167,87 @@ void get_SLR_items(std::vector<SLRItem>& slritems,AugmentedGrammar& grammar,int&
 
         std::string production = std::string(1,lhs) + "->" + rhs;
 
-        lookahead = rhs[rhs.find('@')+1];
+        auto pos = rhs.find('@');
+        lookahead = rhs[pos+1];
 
-        if(lookahead=='\0'){
-            printf("\t%-20s\n",&production[0]);
+        if(lookahead=='\0')
+        {
+            auto str = production.substr(0,production.find('@'));
+            ACTION[itemid].insert(std::make_pair(lookahead,Operation(REDUCE,productionMap[str])));
+            printf("\t%-20s\tReduce %d\n",&production[0],productionMap[str]);
+            continue;
+        }
+        if(lookahead=='$'&&productionMap[production]==0)
+        {
+            ACTION[itemid].insert(std::make_pair(lookahead,Operation(ACC)));
+            printf("\t%-20s\tREDUCE %d\n",&production[0],0);
             continue;
         }
 
+        // if there is no goto defined for the current input symbol from this
+        // item, assign one.
         if(slritems[itemid].gotos.find(lookahead)==slritems[itemid].gotos.end())
         {
-            if(GOTO.find(production)==GOTO.end())
-            {
+            // if there is a global goto defined for the entire production, use
+            // that one instead of creating a new one
+            if (globalGoto.find(production) == globalGoto.end()) {
                 slritems.emplace_back(); // create new state (item)
-
+                // new right-hand-side is identical with '@' moved one space to the right
                 std::string newRhs = rhs;
-                auto at = static_cast<int>(newRhs.find('@'));
-                std::swap(newRhs[at],newRhs[at+1]);
-
-                slritems.back().Push(new AugmentedProduction(lhs,newRhs));
+                int atpos = static_cast<int>(newRhs.find('@'));
+                std::swap(newRhs[atpos], newRhs[atpos+1]);
+                // add item and update gotos
+                slritems.back().Push(new AugmentedProduction(lhs, newRhs));
                 slritems[itemid].gotos[lookahead] = static_cast<int>(slritems.size() - 1);
-                GOTO[production] = static_cast<int>(slritems.size() - 1);
-            }else
-                slritems[itemid].gotos[lookahead] = GOTO[production];
-            printf("\t%-20s goto(%c)=I%d\n", &production[0], lookahead, GOTO[production]);
+                globalGoto[production] = static_cast<int>(slritems.size() - 1);
+            } else {
+                // use existing global item
+                slritems[itemid].gotos[lookahead] = globalGoto[production];
+            }
+            printf("\t%-20s\tgoto(%c)=I%d", &production[0], lookahead, globalGoto[production]);
 
-        }else
+            if(isupper(lookahead))
+            {
+                GOTO[itemid].insert(std::make_pair(lookahead,slritems[itemid].gotos[lookahead]));
+                printf("\tGOTO(%c)=%d",lookahead,slritems[itemid].gotos[lookahead]);
+            }else
+            {
+                //REDUCE
+                for(const auto& production:grammar)
+                {
+                    if(followSetMap[production.first].find(lookahead)!=followSetMap[production.first].end())
+                    {
+                        for(const auto& rightOfProduction:production.second)
+                        {
+                            if(ACTION[itemid].find(lookahead)==ACTION[itemid].end())
+                            {
+                                std::string str = std::string(1,production.first) + "->" + rightOfProduction;
+                                ACTION[itemid].insert(std::make_pair(lookahead,Operation(REDUCE,productionMap[str])));
+                                printf("\tREDUCE(%c)=%d",lookahead,productionMap[str]);
+                            }
+                        }
+                    }
+                }
+                //SHIFT
+                if(ACTION[itemid].find(lookahead)==ACTION[itemid].end())
+                {
+                    ACTION[itemid].insert(std::make_pair(lookahead,Operation(SHIFT,slritems[itemid].gotos[lookahead])));
+                    printf("\tSHIFT(%c)=%d", lookahead, slritems[itemid].gotos[lookahead]);
+                }
+            }
+            printf("\n");
+        } else
         {
-            //move forward @
-            auto at = static_cast<int>(rhs.find('@'));
+            int at = static_cast<int>(rhs.find('@'));
             std::swap(rhs[at],rhs[at+1]);
 
             int nextItem = slritems[itemid].gotos[lookahead];
-            if (!slritems[nextItem].Contains(std::string(&lhs, 1) + "->" + rhs)) {
-                slritems[nextItem].Push(new AugmentedProduction(lhs, rhs));
+            if(!slritems[nextItem].Contains((std::string(1,lhs)+"->"+rhs)))
+            {
+                slritems[nextItem].Push(new AugmentedProduction(lhs,rhs));
             }
             std::swap(rhs[at],rhs[at+1]);
-            printf("\t%-20s\n",&production[0]);
+            printf("\t%-20s\n", &production[0]);
         }
     }
 }
@@ -196,7 +266,7 @@ void calculateFistSet(AugmentedGrammar& augmentedGrammar,FirstSetMap& firstSetMa
             for (const auto &rightProduction:(*it).second) {
                 char firstChOfRightProduct = rightProduction.front();
                 if (firstChOfRightProduct != lhs) {
-                    if (isupper(firstChOfRightProduct))
+                    if (isupper(firstChOfRightProduct)||firstChOfRightProduct=='\'')
                         std::set_union(firstSetMap[lhs].begin(), firstSetMap[lhs].end(),
                                        firstSetMap[firstChOfRightProduct].begin(),
                                        firstSetMap[firstChOfRightProduct].end(),
@@ -215,44 +285,85 @@ void calculateFistSet(AugmentedGrammar& augmentedGrammar,FirstSetMap& firstSetMa
 void calculateFollowSet(AugmentedGrammar& augmentedGrammar,FirstSetMap& firstSetMap,FollowSetMap& followSetMap)
 {
     bool hasChange = true;
-    while(hasChange)
-    {
+    while(hasChange) {
         hasChange = false;
-        for(const auto& leftOfProduction:augmentedGrammar)
+        for (const auto &leftOfProduction:augmentedGrammar)
         {
-            for(const auto& rightOfProduction:leftOfProduction.second)
+            char leftCh = leftOfProduction.first;
+            for (const auto &rightOfProduction:leftOfProduction.second)
             {
-                for(int i = 0;i<rightOfProduction.length();i++)
+                for (int i = 0; i < rightOfProduction.length(); i++)
                 {
                     char rightCh = rightOfProduction[i];
-                    if(isupper(rightCh))
-                    {
+                    if (isupper(rightCh)) {
                         auto firstSize = followSetMap[rightCh].size();
-                        if(i+1==rightOfProduction.length())
-                            followSetMap[rightCh].emplace('$');
+                        if (i + 1 == rightOfProduction.length())
+                            std::set_union(followSetMap[rightCh].begin(), followSetMap[rightCh].end(),
+                                           followSetMap[leftCh].begin(),followSetMap[leftCh].end(),
+                                            std::inserter(followSetMap[rightCh],followSetMap[rightCh].end()));
                         else
                         {
-                            char nextCh = rightOfProduction[i+1];
-                            if(isupper(nextCh))
-                            {
-                                std::set_union(followSetMap[rightCh].begin(),followSetMap[rightCh].end(),
-                                               firstSetMap[nextCh].begin(),firstSetMap[nextCh].end(),
-                                               std::inserter(followSetMap[rightCh],followSetMap[rightCh].end()));
-                            }else
+                            char nextCh = rightOfProduction[i + 1];
+                            if (isupper(nextCh)) {
+                                std::set_union(followSetMap[rightCh].begin(), followSetMap[rightCh].end(),
+                                               firstSetMap[nextCh].begin(), firstSetMap[nextCh].end(),
+                                               std::inserter(followSetMap[rightCh], followSetMap[rightCh].end()));
+                            } else
                             {
                                 followSetMap[rightCh].emplace(nextCh);
                             }
                         }
                         auto afterInsert = followSetMap[rightCh].size();
-                        if(afterInsert>firstSize)
+                        if (afterInsert > firstSize)
                             hasChange = true;
                     }
                 }
             }
         }
     }
-
 }
+
+
+/*void analyze(const std::string& str,ActionMap& ACTION,GotoMap& GOTO,const ProductionVector& productionVector)
+{
+    std::stack<int> stateStack;
+    stateStack.push(0);
+    std::stack<char> symbolStack;
+    symbolStack.push('\'');
+    int pos = 0;
+    while(!stateStack.empty()&&!symbolStack.empty())
+    {
+        const auto& ret = ACTION[stateStack.top()][str[pos]];
+        if(ret.operatorType==SHIFT)
+        {
+            stateStack.push(ret.itemId);
+            symbolStack.push(str[pos]);
+            pos++;
+            printf("SHIFT %d\n",ret.itemId);
+        }else if(ret.operatorType==REDUCE)
+        {
+            auto str = productionVector[ret.itemId];
+            auto delim = std::string("->");
+            auto pos = str.find(delim);
+            auto left = str.substr(0,pos);
+            auto right = str.substr(pos+delim.length(),std::string::npos);
+            for(int i = 0;i<right.length();i++)
+            {
+                stateStack.pop();
+                symbolStack.pop();
+            }
+            stateStack.push(GOTO[stateStack.top()][pos]);
+            symbolStack.push(left[0]);
+            printf("Reduce %d\n",ret.itemId);
+        }else if(ret.operatorType==ACC)
+        {
+            printf("ACC\n");
+            return;
+        }
+    }
+    error();
+    return;
+}*/
 
 int main()
 {
@@ -264,9 +375,14 @@ int main()
     FirstSetMap firstSetMap;
     FollowSetMap followSetMap;
 
+    ProductionMap  productionMap;
+    ProductionVector  productionVector;
+    GlobalGoto globalGoto;
+
+
     printf("Augmented Grammar\n");
     printf("-----------------\n");
-    load_grammar(augmentedGrammar,slritems);
+    load_grammar(augmentedGrammar,slritems,productionMap,productionVector);
     printf("\n");
 
 
@@ -280,9 +396,11 @@ int main()
         {
             std::cout<<temp2<<", ";
         }
-        std::cout<<" }"<<std::endl;
+        std::cout<<"}"<<std::endl;
     }
 
+
+    printf("\n");
     printf("Follow Set\n");
     printf("-----------------\n");
     calculateFollowSet(augmentedGrammar,firstSetMap,followSetMap);
@@ -293,17 +411,28 @@ int main()
         {
             std::cout<<temp2<<", ";
         }
-        std::cout<<" }"<<std::endl;
+        std::cout<<"}"<<std::endl;
     }
+    printf("\n");
+    printf("-------------------\n");
 
-    printf("Sets of LR(0) Items\n");
+    for(int i = 0;i<productionVector.size();i++)
+    {
+        std::cout<<i<<": "<<productionVector[i]<<std::endl;
+    }
+    printf("-------------------\n");
+
+    printf("\n");
+    printf("Sets of SLR(1) Items\n");
     printf("-------------------\n");
     while(++itemid<slritems.size())
     {
-        get_SLR_items(slritems,augmentedGrammar,itemid,GOTO);
+        get_SLR_items(slritems,augmentedGrammar,itemid,globalGoto,GOTO,ACTION,followSetMap,productionMap);
     }
     printf("\n");
 
+    std::string test("i+i");
+    //analyze(test,ACTION,GOTO,productionVector);
 
     return 0;
 }
