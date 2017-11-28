@@ -21,10 +21,15 @@ struct Operation
     OperatorType operatorType;
     int itemId;
 
-    //Operation() = default;
-    Operation(OperatorType operatorType,int itemId = -1)
+    Operation() = default;
+
+    explicit Operation(OperatorType operatorType,int itemId = -1)
             :operatorType(operatorType),itemId(itemId)
     {}
+    Operation(const Operation& operation) = default;
+
+    Operation(Operation&& operation) = default;
+
 };
 using GotoMap = std::map<int,std::map<char,int>>;
 using ActionMap = std::map<int,std::map<char,Operation>>;
@@ -126,7 +131,10 @@ void add_closure(char lookahead,SLRItem& item,AugmentedGrammar& augmentedGrammar
     for(int i = 0;i<augmentedGrammar[lookahead].size();i++)
     {
         std::string rhs = "@" + augmentedGrammar[lookahead][i];
-        if(!item.Contains(lhs+"->"+rhs))
+        std::string temp = lhs;
+        temp.append("->");
+        temp.append(rhs);
+        if(!item.Contains(temp))
         {
             item.Push(new AugmentedProduction(lookahead,rhs));
         }
@@ -135,7 +143,7 @@ void add_closure(char lookahead,SLRItem& item,AugmentedGrammar& augmentedGrammar
 
 void error()
 {
-    std::cout<<"ERROR"<<std::endl;
+    printf("ERROR\n");
 }
 
 
@@ -173,8 +181,16 @@ void get_SLR_items(std::vector<SLRItem>& slritems,AugmentedGrammar& grammar,int&
         if(lookahead=='\0')
         {
             auto str = production.substr(0,production.find('@'));
-            ACTION[itemid].insert(std::make_pair(lookahead,Operation(REDUCE,productionMap[str])));
-            printf("\t%-20s\tReduce %d\n",&production[0],productionMap[str]);
+            printf("\t%-20s",&production[0]);
+            for(const auto& element:followSetMap[lhs])
+            {
+                if(ACTION[itemid].find(element)==ACTION[itemid].end())
+                {
+                    ACTION[itemid].insert(std::make_pair(element,Operation(REDUCE,productionMap[str])));
+                    printf("\tReduce(%c)=%d",element,productionMap[str]);
+                }
+            }
+            printf("\n");
             continue;
         }
         if(lookahead=='$'&&productionMap[production]==0)
@@ -194,7 +210,7 @@ void get_SLR_items(std::vector<SLRItem>& slritems,AugmentedGrammar& grammar,int&
                 slritems.emplace_back(); // create new state (item)
                 // new right-hand-side is identical with '@' moved one space to the right
                 std::string newRhs = rhs;
-                int atpos = static_cast<int>(newRhs.find('@'));
+                auto atpos = static_cast<int>(newRhs.find('@'));
                 std::swap(newRhs[atpos], newRhs[atpos+1]);
                 // add item and update gotos
                 slritems.back().Push(new AugmentedProduction(lhs, newRhs));
@@ -212,33 +228,34 @@ void get_SLR_items(std::vector<SLRItem>& slritems,AugmentedGrammar& grammar,int&
                 printf("\tGOTO(%c)=%d",lookahead,slritems[itemid].gotos[lookahead]);
             }else
             {
-                //REDUCE
-                for(const auto& production:grammar)
-                {
-                    if(followSetMap[production.first].find(lookahead)!=followSetMap[production.first].end())
-                    {
-                        for(const auto& rightOfProduction:production.second)
-                        {
-                            if(ACTION[itemid].find(lookahead)==ACTION[itemid].end())
-                            {
-                                std::string str = std::string(1,production.first) + "->" + rightOfProduction;
-                                ACTION[itemid].insert(std::make_pair(lookahead,Operation(REDUCE,productionMap[str])));
-                                printf("\tREDUCE(%c)=%d",lookahead,productionMap[str]);
-                            }
-                        }
-                    }
-                }
                 //SHIFT
                 if(ACTION[itemid].find(lookahead)==ACTION[itemid].end())
                 {
                     ACTION[itemid].insert(std::make_pair(lookahead,Operation(SHIFT,slritems[itemid].gotos[lookahead])));
                     printf("\tSHIFT(%c)=%d", lookahead, slritems[itemid].gotos[lookahead]);
                 }
+                //REDUCE
+                for(const auto& prod:grammar)
+                {
+                    if(followSetMap[prod.first].find(lookahead)!=followSetMap[prod.first].end())
+                    {
+                        for(const auto& rightOfProduction:prod.second)
+                        {
+                            if(ACTION[itemid].find(lookahead)==ACTION[itemid].end())
+                            {
+                                std::string str = std::string(1,prod.first) + "->" + rightOfProduction;
+                                ACTION[itemid].insert(std::make_pair(lookahead,Operation(REDUCE,productionMap[str])));
+                                printf("\tREDUCE(%c)=%d",lookahead,productionMap[str]);
+                            }
+                        }
+                    }
+                }
+
             }
             printf("\n");
         } else
         {
-            int at = static_cast<int>(rhs.find('@'));
+            auto at = static_cast<int>(rhs.find('@'));
             std::swap(rhs[at],rhs[at+1]);
 
             int nextItem = slritems[itemid].gotos[lookahead];
@@ -324,7 +341,7 @@ void calculateFollowSet(AugmentedGrammar& augmentedGrammar,FirstSetMap& firstSet
 }
 
 
-/*void analyze(const std::string& str,ActionMap& ACTION,GotoMap& GOTO,const ProductionVector& productionVector)
+void analyze(const std::string& str,ActionMap& ACTION,GotoMap& GOTO,const ProductionVector& productionVector)
 {
     std::stack<int> stateStack;
     stateStack.push(0);
@@ -342,17 +359,17 @@ void calculateFollowSet(AugmentedGrammar& augmentedGrammar,FirstSetMap& firstSet
             printf("SHIFT %d\n",ret.itemId);
         }else if(ret.operatorType==REDUCE)
         {
-            auto str = productionVector[ret.itemId];
+            auto string = productionVector[ret.itemId];
             auto delim = std::string("->");
-            auto pos = str.find(delim);
-            auto left = str.substr(0,pos);
-            auto right = str.substr(pos+delim.length(),std::string::npos);
+            auto delimPos = string.find(delim);
+            auto left = string.substr(0,delimPos);
+            auto right = string.substr(delimPos+delim.length(),std::string::npos);
             for(int i = 0;i<right.length();i++)
             {
                 stateStack.pop();
                 symbolStack.pop();
             }
-            stateStack.push(GOTO[stateStack.top()][pos]);
+            stateStack.push(GOTO[stateStack.top()][left[0]]);
             symbolStack.push(left[0]);
             printf("Reduce %d\n",ret.itemId);
         }else if(ret.operatorType==ACC)
@@ -362,8 +379,7 @@ void calculateFollowSet(AugmentedGrammar& augmentedGrammar,FirstSetMap& firstSet
         }
     }
     error();
-    return;
-}*/
+}
 
 int main()
 {
@@ -431,8 +447,11 @@ int main()
     }
     printf("\n");
 
-    std::string test("i+i");
-    //analyze(test,ACTION,GOTO,productionVector);
+    printf("Enter the string need to analysis and it should be ended with'$'\n");
+
+    std::string test;
+    std::cin>>test;
+    analyze(test,ACTION,GOTO,productionVector);
 
     return 0;
 }
