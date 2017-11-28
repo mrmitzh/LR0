@@ -407,12 +407,10 @@ int main()
     calculateFistSet(augmentedGrammar,firstSetMap);
     for(const auto& temp1:firstSetMap)
     {
-        std::cout<<temp1.first<<":{ ";
+        printf("%c:{ ",temp1.first);
         for(const auto& temp2:temp1.second)
-        {
-            std::cout<<temp2<<", ";
-        }
-        std::cout<<"}"<<std::endl;
+            printf("%c ",temp2);
+        printf("}\n");
     }
 
 
@@ -422,12 +420,10 @@ int main()
     calculateFollowSet(augmentedGrammar,firstSetMap,followSetMap);
     for(const auto& temp1:followSetMap)
     {
-        std::cout<<temp1.first<<":{ ";
+        printf("%c:{ ",temp1.first);
         for(const auto& temp2:temp1.second)
-        {
-            std::cout<<temp2<<", ";
-        }
-        std::cout<<"}"<<std::endl;
+            printf("%c ",temp2);
+        printf("}\n");
     }
     printf("\n");
     printf("-------------------\n");
@@ -448,7 +444,7 @@ int main()
     printf("\n");
 
     printf("Enter the string need to analysis and it should be ended with'$'\n");
-
+    
     std::string test;
     std::cin>>test;
     analyze(test,ACTION,GOTO,productionVector);
